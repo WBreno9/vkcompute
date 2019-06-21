@@ -20,4 +20,4 @@
 
 #include <vk_mem_alloc.h>
 
-#include <libshaderc/shaderc.hpp>
+#include <shaderc/shaderc.hpp>
