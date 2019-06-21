@@ -11,8 +11,9 @@
 #include <unordered_map>
 #include <vector>
 
+#define VK_NO_PROTOTYPES
 #include <volk.h>
 
-#include <GLFW/glfw3.h>
+//#include <GLFW/glfw3.h>
 
 #include <spdlog/spdlog.h>
