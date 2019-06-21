@@ -1,8 +1,5 @@
 #include "vkrpch.h"
 
-#define VMA_IMPLEMENTATION
-#include <vk_mem_alloc.h>
-
 #define PANIC_BAD_RESULT(result)                              \
     if (result != VK_SUCCESS) {                               \
         spdlog::error("PANIC AT: {}:{}", __LINE__, __FILE__); \
@@ -50,12 +47,17 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
 
 class Buffer {
    public:
+    const VmaAllocator allocator_;
     VmaAllocation allocation_;
     VmaAllocationInfo allocation_info_;
+    const VmaMemoryUsage mem_usage_;
 
     VkBuffer buffer_;
-    VkBufferCreateInfo buffer_info_;
+    uint32_t size_;
+    uint32_t family_index_;
+    VkBufferCreateFlags buffer_usage_;
 
+    Buffer() = default;
     Buffer(const VmaAllocator& allocator, uint32_t size,
            VkBufferCreateFlags buffer_usage, VmaMemoryUsage mem_usage,
            uint32_t family_index);
@@ -64,19 +66,25 @@ class Buffer {
 
 Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
                VkBufferCreateFlags buffer_usage, VmaMemoryUsage mem_usage,
-               uint32_t family_index) {
-    buffer_info_.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info_.size = size;
-    buffer_info_.usage = buffer_usage;
-    buffer_info_.queueFamilyIndexCount = 1;
-    buffer_info_.pQueueFamilyIndices = &family_index;
-    buffer_info_.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+               uint32_t family_index)
+    : allocator_(allocator),
+      mem_usage_(mem_usage),
+      size_(size),
+      family_index_(family_index),
+      buffer_usage_(buffer_usage) {
+    VkBufferCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    create_info.size = size;
+    create_info.usage = buffer_usage;
+    create_info.queueFamilyIndexCount = 1;
+    create_info.pQueueFamilyIndices = &family_index;
+    create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VmaAllocationCreateInfo allocation_create_info_ = {};
-    allocation_create_info_.usage = mem_usage;
+    VmaAllocationCreateInfo allocation_create_info = {};
+    allocation_create_info.usage = mem_usage;
 
-    PANIC_BAD_RESULT(vmaCreateBuffer(allocator, &buffer_info_,
-                                     &allocation_create_info_, &buffer_,
+    PANIC_BAD_RESULT(vmaCreateBuffer(allocator_, &create_info,
+                                     &allocation_create_info, &buffer_,
                                      &allocation_, &allocation_info_));
 }
 Buffer::~Buffer() {}
@@ -85,10 +93,115 @@ class DescriptorSet {
    public:
     VkDescriptorSet descriptor_set_;
     VkDescriptorSetLayout descriptor_set_layout_;
+    std::vector<VkDescriptorSetLayoutBinding> bindings_;
 
-    VkDescriptorPool descriptor_pool_;
     VkDevice device_;
+
+    DescriptorSet() = default;
+    DescriptorSet(VkDevice device, VkDescriptorSet descriptor_set,
+                  VkDescriptorSetLayout descriptor_set_layout,
+                  std::vector<VkDescriptorSetLayoutBinding> bindings);
+
+    void update(uint32_t binding, uint32_t start_element,
+                uint32_t descriptor_count, uint32_t offset, uint64_t range,
+                const VkBuffer& buffer);
 };
+
+DescriptorSet::DescriptorSet(VkDevice device, VkDescriptorSet descriptor_set,
+                             VkDescriptorSetLayout descriptor_set_layout,
+                             std::vector<VkDescriptorSetLayoutBinding> bindings)
+    : descriptor_set_(descriptor_set),
+      descriptor_set_layout_(descriptor_set_layout),
+      bindings_(bindings) {}
+
+void DescriptorSet::update(uint32_t binding, uint32_t start_element,
+                           uint32_t descriptor_count, uint32_t offset,
+                           uint64_t range, const VkBuffer& buffer) {
+    VkDescriptorBufferInfo buffer_info = {};
+    buffer_info.buffer = buffer;
+    buffer_info.offset = offset;
+    buffer_info.range = range;
+
+    VkWriteDescriptorSet write_set = {};
+    write_set.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write_set.descriptorCount = descriptor_count;
+    write_set.descriptorType =
+        bindings_.at(binding)
+            .descriptorType;  // Only works if the bindings are sorted
+    write_set.dstBinding = binding;
+    write_set.dstArrayElement = start_element;
+    write_set.dstBinding = binding;
+    write_set.dstSet = descriptor_set_;
+    write_set.pBufferInfo = &buffer_info;
+
+    vkUpdateDescriptorSets(device_, 1, &write_set, 0, nullptr);
+}
+
+class DescriptorPool {
+   public:
+    VkDescriptorPool descriptor_pool_;
+    std::vector<DescriptorSet> descriptor_sets_;
+    std::vector<VkDescriptorPoolSize> pool_sizes_;
+    uint32_t max_sets_;
+
+    VkDevice device_;
+
+    DescriptorPool() = default;
+    DescriptorPool(const VkDevice& device, uint32_t max_sets,
+                   const std::vector<VkDescriptorPoolSize>& pool_sizes);
+
+    void create();
+    DescriptorSet* allocate_descriptor_set(
+        const std::vector<VkDescriptorSetLayoutBinding>& bindings);
+};
+
+DescriptorPool::DescriptorPool(
+    const VkDevice& device, uint32_t max_sets,
+    const std::vector<VkDescriptorPoolSize>& pool_sizes)
+    : device_(device), max_sets_(max_sets), pool_sizes_(pool_sizes) {}
+
+void DescriptorPool::create() {
+    VkDescriptorPoolCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    create_info.maxSets = max_sets_;
+    create_info.poolSizeCount = pool_sizes_.size();
+    create_info.pPoolSizes = pool_sizes_.data();
+
+    PANIC_BAD_RESULT(vkCreateDescriptorPool(device_, &create_info, nullptr,
+                                            &descriptor_pool_));
+}
+
+DescriptorSet* DescriptorPool::allocate_descriptor_set(
+    const std::vector<VkDescriptorSetLayoutBinding>& bindings) {
+    // Keep the bindings sorted
+    auto bindings_sorted = bindings;
+    std::sort(bindings_sorted.begin(), bindings_sorted.end(),
+              [](const VkDescriptorSetLayoutBinding& b1,
+                 const VkDescriptorSetLayoutBinding& b2) -> bool {
+                  return (b1.binding < b2.binding);
+              });
+
+    VkDescriptorSetLayoutCreateInfo set_layout_info = {};
+    set_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    set_layout_info.bindingCount = bindings.size();
+    set_layout_info.pBindings = bindings.data();
+
+    VkDescriptorSetLayout set_layout;
+    PANIC_BAD_RESULT(vkCreateDescriptorSetLayout(device_, &set_layout_info,
+                                                 nullptr, &set_layout));
+
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = descriptor_pool_;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &set_layout;
+
+    VkDescriptorSet set;
+    PANIC_BAD_RESULT(vkAllocateDescriptorSets(device_, &alloc_info, &set));
+
+    descriptor_sets_.emplace_back(device_, set, set_layout, bindings);
+    return &(descriptor_sets_.at(descriptor_sets_.size() - 1));
+}
 
 class Pipeline {
    public:
@@ -98,6 +211,7 @@ class Pipeline {
 
     VkDevice device_;
 
+    Pipeline() = default;
     Pipeline(const VkDevice& device);
 
     void create(const std::vector<uint32_t>& program_src,
@@ -160,13 +274,15 @@ class Compute {
     std::vector<const char*> device_extensions_;
 
     std::vector<Buffer> buffers_;
+    DescriptorPool descriptor_pool_;
 
-    VkDescriptorPool descriptor_pool_;
+    Pipeline pipeline_;
 
     void init_instance(bool use_validation);
     void get_physical_device();
     void init_device();
     void init_vma_allocator();
+    void create_pipeline();
 };
 
 void Compute::init_instance(bool use_validation) {
@@ -299,6 +415,11 @@ void Compute::init_vma_allocator() {
     allocator_create_info.pVulkanFunctions = &vma_functions;
 
     PANIC_BAD_RESULT(vmaCreateAllocator(&allocator_create_info, &allocator_));
+}
+
+void Compute::create_pipeline() {
+    pipeline_ = Pipeline(device_);
+    // pipeline_.create();
 }
 }  // namespace vkc
 

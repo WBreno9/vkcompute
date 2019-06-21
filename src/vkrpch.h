@@ -17,3 +17,7 @@
 //#include <GLFW/glfw3.h>
 
 #include <spdlog/spdlog.h>
+
+#include <vk_mem_alloc.h>
+
+#include <libshaderc/shaderc.hpp>
