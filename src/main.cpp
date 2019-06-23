@@ -26,9 +26,12 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
     messenger_create_info.pfnUserCallback = validation_layer_callback;
     messenger_create_info.messageType =
         VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
-        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     messenger_create_info.messageSeverity =
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
 
     vkCreateDebugUtilsMessengerEXT =
         (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
@@ -45,8 +48,7 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
     return debug_messenger;
 }
 
-class Buffer {
-   public:
+struct Buffer {
     const VmaAllocator allocator_;
     VmaAllocation allocation_;
     VmaAllocationInfo allocation_info_;
@@ -89,8 +91,7 @@ Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
 }
 Buffer::~Buffer() {}
 
-class DescriptorSet {
-   public:
+struct DescriptorSet {
     VkDescriptorSet descriptor_set_;
     VkDescriptorSetLayout descriptor_set_layout_;
     std::vector<VkDescriptorSetLayoutBinding> bindings_;
@@ -98,7 +99,7 @@ class DescriptorSet {
     VkDevice device_;
 
     DescriptorSet() = default;
-    DescriptorSet(VkDevice device, VkDescriptorSet descriptor_set,
+    DescriptorSet(const VkDevice& device, VkDescriptorSet descriptor_set,
                   VkDescriptorSetLayout descriptor_set_layout,
                   std::vector<VkDescriptorSetLayoutBinding> bindings);
 
@@ -107,10 +108,12 @@ class DescriptorSet {
                 const VkBuffer& buffer);
 };
 
-DescriptorSet::DescriptorSet(VkDevice device, VkDescriptorSet descriptor_set,
+DescriptorSet::DescriptorSet(const VkDevice& device,
+                             VkDescriptorSet descriptor_set,
                              VkDescriptorSetLayout descriptor_set_layout,
                              std::vector<VkDescriptorSetLayoutBinding> bindings)
-    : descriptor_set_(descriptor_set),
+    : device_(device),
+      descriptor_set_(descriptor_set),
       descriptor_set_layout_(descriptor_set_layout),
       bindings_(bindings) {}
 
@@ -134,13 +137,14 @@ void DescriptorSet::update(uint32_t binding, uint32_t start_element,
     write_set.dstSet = descriptor_set_;
     write_set.pBufferInfo = &buffer_info;
 
+    write_set.pImageInfo = nullptr;
+    write_set.pTexelBufferView = nullptr;
+
     vkUpdateDescriptorSets(device_, 1, &write_set, 0, nullptr);
 }
 
-class DescriptorPool {
-   public:
+struct DescriptorPool {
     VkDescriptorPool descriptor_pool_;
-    std::vector<DescriptorSet> descriptor_sets_;
     std::vector<VkDescriptorPoolSize> pool_sizes_;
     uint32_t max_sets_;
 
@@ -151,14 +155,16 @@ class DescriptorPool {
                    const std::vector<VkDescriptorPoolSize>& pool_sizes);
 
     void create();
-    DescriptorSet* allocate_descriptor_set(
+    DescriptorSet allocate_descriptor_set(
         const std::vector<VkDescriptorSetLayoutBinding>& bindings);
 };
 
 DescriptorPool::DescriptorPool(
     const VkDevice& device, uint32_t max_sets,
     const std::vector<VkDescriptorPoolSize>& pool_sizes)
-    : device_(device), max_sets_(max_sets), pool_sizes_(pool_sizes) {}
+    : device_(device), max_sets_(max_sets), pool_sizes_(pool_sizes) {
+    create();
+}
 
 void DescriptorPool::create() {
     VkDescriptorPoolCreateInfo create_info = {};
@@ -171,7 +177,7 @@ void DescriptorPool::create() {
                                             &descriptor_pool_));
 }
 
-DescriptorSet* DescriptorPool::allocate_descriptor_set(
+DescriptorSet DescriptorPool::allocate_descriptor_set(
     const std::vector<VkDescriptorSetLayoutBinding>& bindings) {
     // Keep the bindings sorted
     auto bindings_sorted = bindings;
@@ -198,13 +204,10 @@ DescriptorSet* DescriptorPool::allocate_descriptor_set(
 
     VkDescriptorSet set;
     PANIC_BAD_RESULT(vkAllocateDescriptorSets(device_, &alloc_info, &set));
-
-    descriptor_sets_.emplace_back(device_, set, set_layout, bindings);
-    return &(descriptor_sets_.at(descriptor_sets_.size() - 1));
+    return DescriptorSet(device_, set, set_layout, bindings);
 }
 
-class Pipeline {
-   public:
+struct Pipeline {
     VkShaderModule shader_;
     VkPipeline pipeline_;
     VkPipelineLayout pipeline_layout_;
@@ -273,8 +276,11 @@ class Compute {
     std::vector<const char*> instance_extensions_;
     std::vector<const char*> device_extensions_;
 
+    uint32_t vec_size_;
     std::vector<Buffer> buffers_;
+
     DescriptorPool descriptor_pool_;
+    DescriptorSet descriptor_set_;
 
     Pipeline pipeline_;
 
@@ -282,6 +288,8 @@ class Compute {
     void get_physical_device();
     void init_device();
     void init_vma_allocator();
+    void create_buffers();
+    void create_descriptors();
     void create_pipeline();
 };
 
@@ -291,7 +299,11 @@ void Compute::init_instance(bool use_validation) {
     spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%T] [%^%l%$] %v");
 
-    spdlog::debug("Initializing volk");
+    /*
+        Using volk to minimize API calls overhead
+        More info at: https://gpuopen.com/reducing-vulkan-api-call-overhead/
+    */
+    spdlog::info("Initializing volk");
     if (volkInitialize() != VK_SUCCESS) {
         spdlog::error("Failed to initialize volk, abort");
         std::exit(EXIT_FAILURE);
@@ -302,11 +314,12 @@ void Compute::init_instance(bool use_validation) {
     if (use_validation_) {
         instance_extensions_.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         validation_layers.push_back("VK_LAYER_LUNARG_standard_validation");
+        // validation_layers.push_back("VK_LAYER_LUNARG_api_dump");
     }
 
     VkApplicationInfo app_info = {};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    app_info.apiVersion = VK_VERSION_1_1;
+    app_info.apiVersion = VK_API_VERSION_1_1;
     app_info.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
     app_info.engineVersion = VK_MAKE_VERSION(0, 1, 0);
     app_info.pEngineName = "Null Engine";
@@ -368,7 +381,7 @@ void Compute::get_physical_device() {
 void Compute::init_device() {
     float queue_priority = 1.0f;
     VkDeviceQueueCreateInfo queue_create_info = {};
-    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     queue_create_info.pQueuePriorities = &queue_priority;
     queue_create_info.queueCount = 1;
     queue_create_info.queueFamilyIndex = compute_queue_index_;
@@ -389,7 +402,12 @@ void Compute::init_device() {
 }
 
 void Compute::init_vma_allocator() {
-    spdlog::debug("Initializing VMA Allocator");
+    /*
+        Vulkan Memory Allocator
+        More info at:
+       https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+     */
+    spdlog::info("Initializing VMA Allocator");
 
     VmaVulkanFunctions vma_functions = {vkGetPhysicalDeviceProperties,
                                         vkGetPhysicalDeviceMemoryProperties,
@@ -417,9 +435,60 @@ void Compute::init_vma_allocator() {
     PANIC_BAD_RESULT(vmaCreateAllocator(&allocator_create_info, &allocator_));
 }
 
+void Compute::create_buffers() {
+    spdlog::info("Creating buffers");
+    buffers_.emplace_back(allocator_, vec_size_,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_CPU_TO_GPU, compute_queue_index_);
+    buffers_.emplace_back(allocator_, vec_size_,
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          VMA_MEMORY_USAGE_GPU_ONLY, compute_queue_index_);
+}
+
+void Compute::create_descriptors() {
+    spdlog::info("Creatring descriptors");
+
+    std::vector<VkDescriptorPoolSize> pool_sizes = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+
+    spdlog::info("Creating descriptor pool");
+    descriptor_pool_ = DescriptorPool(device_, 1, pool_sizes);
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+         nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
+         nullptr}};
+
+    spdlog::info("Creating descriptor set");
+    descriptor_set_ = descriptor_pool_.allocate_descriptor_set(bindings);
+
+    spdlog::info("Updating descriptor set");
+    descriptor_set_.update(0, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(0).buffer_);
+    descriptor_set_.update(1, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(1).buffer_);
+}
+
 void Compute::create_pipeline() {
     pipeline_ = Pipeline(device_);
-    // pipeline_.create();
+
+    spdlog::info("Loading SPIR-V binary file");
+
+    std::vector<uint32_t> shader_binary;
+    std::ifstream fs("shaders/sum.comp.spv");
+    if (!fs.is_open()) {
+        spdlog::error("Failed to open shader binary, abort");
+        std::exit(EXIT_FAILURE);
+    }
+    fs.seekg(0, fs.end);
+    shader_binary.resize(fs.tellg());
+    fs.seekg(0, fs.beg);
+    fs.read(reinterpret_cast<char*>(shader_binary.data()),
+            shader_binary.size());
+
+    spdlog::info("Binary Size: {}", shader_binary.size());
+
+    spdlog::info("Creating compute pipeline");
+    pipeline_.create(shader_binary, descriptor_set_);
 }
 }  // namespace vkc
 
@@ -429,6 +498,10 @@ int main() {
     compute.get_physical_device();
     compute.init_device();
     compute.init_vma_allocator();
+    compute.vec_size_ = 10;
+    compute.create_buffers();
+    compute.create_descriptors();
+    compute.create_pipeline();
 
     return 0;
 }
