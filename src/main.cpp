@@ -48,6 +48,16 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
     return debug_messenger;
 }
 
+class MoveOnly {
+   public:
+    MoveOnly() = default;
+    MoveOnly(MoveOnly&& other) = default;
+    MoveOnly& operator=(MoveOnly&& other) = default;
+
+    MoveOnly(MoveOnly& other) = delete;
+    MoveOnly& operator=(MoveOnly) = delete;
+};
+
 struct Buffer {
     VkBuffer handle_;
 
