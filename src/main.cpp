@@ -299,7 +299,7 @@ struct PhysicalDevice {
 
 struct Instance {
     VkInstance handle_;
-    std::vector<const char*> instance_extensions_;
+    std::vector<const char*> extensions_;
 
     bool use_validation_;
     VkDebugUtilsMessengerEXT debug_messenger_;
@@ -329,7 +329,7 @@ void Instance::init(bool use_validation) {
     std::vector<const char*> validation_layers;
 
     if (use_validation_) {
-        instance_extensions_.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        extensions_.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         validation_layers.push_back("VK_LAYER_LUNARG_standard_validation");
         // validation_layers.push_back("VK_LAYER_LUNARG_api_dump");
     }
@@ -344,8 +344,8 @@ void Instance::init(bool use_validation) {
 
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    create_info.enabledExtensionCount = instance_extensions_.size();
-    create_info.ppEnabledExtensionNames = instance_extensions_.data();
+    create_info.enabledExtensionCount = extensions_.size();
+    create_info.ppEnabledExtensionNames = extensions_.data();
     create_info.enabledLayerCount = validation_layers.size();
     create_info.ppEnabledLayerNames = validation_layers.data();
     create_info.pApplicationInfo = &app_info;
@@ -425,6 +425,46 @@ VmaAllocator create_vma_allocator(VkDevice device,
     return allocator;
 }
 
+struct CommandPool {
+    VkCommandPool handle_;
+    uint32_t family_index_;
+    std::vector<VkCommandBuffer> command_buffers_;
+
+    VkDevice device_;
+
+    CommandPool() = default;
+    CommandPool(VkDevice device, uint32_t family_index);
+
+    VkCommandBuffer allocate_command_buffer(VkCommandBufferLevel level);
+};
+
+CommandPool::CommandPool(VkDevice device, uint32_t family_index)
+    : family_index_(family_index), device_(device) {
+    VkCommandPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.queueFamilyIndex = family_index_;
+
+    spdlog::info("Creating command pool");
+    PANIC_BAD_RESULT(
+        vkCreateCommandPool(device_, &pool_info, nullptr, &handle_));
+}
+
+VkCommandBuffer CommandPool::allocate_command_buffer(
+    VkCommandBufferLevel level) {
+    VkCommandBufferAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandBufferCount = 1;
+    alloc_info.level = level;
+    alloc_info.commandPool = handle_;
+
+    VkCommandBuffer command_buffer;
+    PANIC_BAD_RESULT(
+        vkAllocateCommandBuffers(device_, &alloc_info, &command_buffer));
+
+    command_buffers_.push_back(command_buffer);
+    return command_buffer;
+}
+
 class Compute {
    public:
     Instance instance_;
@@ -445,7 +485,7 @@ class Compute {
 
     Pipeline pipeline_;
 
-    VkCommandPool command_pool_;
+    CommandPool command_pool_;
     VkCommandBuffer command_buffer_;
 
     void init(bool use_validation);
@@ -571,23 +611,9 @@ void Compute::create_pipeline() {
 }
 
 void Compute::create_command_buffer() {
-    VkCommandPoolCreateInfo pool_info = {};
-    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    pool_info.queueFamilyIndex = compute_queue_index_;
-
-    spdlog::info("Creating command pool");
-    PANIC_BAD_RESULT(
-        vkCreateCommandPool(device_, &pool_info, nullptr, &command_pool_));
-
-    VkCommandBufferAllocateInfo alloc_info = {};
-    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandBufferCount = 1;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandPool = command_pool_;
-
-    spdlog::info("Allocating command pool");
-    PANIC_BAD_RESULT(
-        vkAllocateCommandBuffers(device_, &alloc_info, &command_buffer_));
+    command_pool_ = CommandPool(device_, compute_queue_index_);
+    command_buffer_ =
+        command_pool_.allocate_command_buffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
 }
 
 void Compute::dispatch() {
