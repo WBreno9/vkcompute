@@ -13,6 +13,6 @@ layout(set = 0, binding = 1) buffer OUT_BUFFER {
 
 void main() {
     for (uint i = 0; i < vec_in_size; ++i) {
-        vec_out[i] = vec_in[i];
+        vec_out[i] += vec_in[i];
     }
 }

@@ -49,21 +49,27 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
 }
 
 struct Buffer {
-    const VmaAllocator allocator_;
+    VmaAllocator allocator_;
     VmaAllocation allocation_;
     VmaAllocationInfo allocation_info_;
-    const VmaMemoryUsage mem_usage_;
+    VmaMemoryUsage mem_usage_;
 
     VkBuffer buffer_;
     uint32_t size_;
     uint32_t family_index_;
     VkBufferCreateFlags buffer_usage_;
 
+    char* map_ptr_;
+    bool is_mapped_;
+
     Buffer() = default;
     Buffer(const VmaAllocator& allocator, uint32_t size,
            VkBufferCreateFlags buffer_usage, VmaMemoryUsage mem_usage,
            uint32_t family_index);
     ~Buffer();
+
+    char* map();
+    void unmap();
 };
 
 Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
@@ -73,7 +79,9 @@ Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
       mem_usage_(mem_usage),
       size_(size),
       family_index_(family_index),
-      buffer_usage_(buffer_usage) {
+      buffer_usage_(buffer_usage),
+      is_mapped_(false),
+      map_ptr_(nullptr) {
     VkBufferCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     create_info.size = size;
@@ -90,6 +98,32 @@ Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
                                      &allocation_, &allocation_info_));
 }
 Buffer::~Buffer() {}
+
+char* Buffer::map() {
+    if (is_mapped_) return map_ptr_;
+
+    if (mem_usage_ == VMA_MEMORY_USAGE_GPU_ONLY) {
+        spdlog::error("GPU only memory can't be mapped");
+        std::exit(EXIT_FAILURE);
+    }
+
+    PANIC_BAD_RESULT(vmaMapMemory(allocator_, allocation_,
+                                  reinterpret_cast<void**>(&map_ptr_)));
+
+    is_mapped_ = true;
+    return map_ptr_;
+}
+
+void Buffer::unmap() {
+    if (!is_mapped_) {
+        spdlog::error("Buffer isn't mapped");
+        std::exit(EXIT_FAILURE);
+    }
+
+    vmaUnmapMemory(allocator_, allocation_);
+    is_mapped_ = false;
+    map_ptr_ = nullptr;
+}
 
 struct DescriptorSet {
     VkDescriptorSet descriptor_set_;
@@ -284,6 +318,9 @@ class Compute {
 
     Pipeline pipeline_;
 
+    VkCommandPool command_pool_;
+    VkCommandBuffer command_buffer_;
+
     void init_instance(bool use_validation);
     void get_physical_device();
     void init_device();
@@ -291,6 +328,12 @@ class Compute {
     void create_buffers();
     void create_descriptors();
     void create_pipeline();
+    void create_command_buffer();
+
+    void dispatch();
+
+    void fill_buffer();
+    void dump_buffer();
 };
 
 void Compute::init_instance(bool use_validation) {
@@ -437,12 +480,14 @@ void Compute::init_vma_allocator() {
 
 void Compute::create_buffers() {
     spdlog::info("Creating buffers");
-    buffers_.emplace_back(allocator_, vec_size_,
+    buffers_.emplace_back(allocator_,
+                          vec_size_ * sizeof(float) + sizeof(uint32_t),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                           VMA_MEMORY_USAGE_CPU_TO_GPU, compute_queue_index_);
-    buffers_.emplace_back(allocator_, vec_size_,
+    buffers_.emplace_back(allocator_,
+                          vec_size_ * sizeof(float) + sizeof(uint32_t),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                          VMA_MEMORY_USAGE_GPU_ONLY, compute_queue_index_);
+                          VMA_MEMORY_USAGE_GPU_TO_CPU, compute_queue_index_);
 }
 
 void Compute::create_descriptors() {
@@ -490,6 +535,92 @@ void Compute::create_pipeline() {
     spdlog::info("Creating compute pipeline");
     pipeline_.create(shader_binary, descriptor_set_);
 }
+
+void Compute::create_command_buffer() {
+    VkCommandPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.queueFamilyIndex = compute_queue_index_;
+
+    spdlog::info("Creating command pool");
+    PANIC_BAD_RESULT(
+        vkCreateCommandPool(device_, &pool_info, nullptr, &command_pool_));
+
+    VkCommandBufferAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandBufferCount = 1;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandPool = command_pool_;
+
+    spdlog::info("Allocating command pool");
+    PANIC_BAD_RESULT(
+        vkAllocateCommandBuffers(device_, &alloc_info, &command_buffer_));
+}
+
+void Compute::dispatch() {
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    spdlog::info("Recording command buffer");
+    PANIC_BAD_RESULT(vkBeginCommandBuffer(command_buffer_, &begin_info));
+
+    vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      pipeline_.pipeline_);
+
+    vkCmdBindDescriptorSets(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            pipeline_.pipeline_layout_, 0, 1,
+                            &descriptor_set_.descriptor_set_, 0, nullptr);
+
+    vkCmdDispatch(command_buffer_, 1, 1, 1);
+
+    PANIC_BAD_RESULT(vkEndCommandBuffer(command_buffer_));
+
+    spdlog::info("Submitting");
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &command_buffer_;
+
+    PANIC_BAD_RESULT(
+        vkQueueSubmit(compute_queue_, 1, &submit_info, VK_NULL_HANDLE));
+
+    spdlog::info("Wainting on queue");
+    vkQueueWaitIdle(compute_queue_);
+}
+
+void Compute::fill_buffer() {
+    std::srand(std::time(nullptr));
+
+    for (auto& buffer : buffers_) {
+        char* m = buffer.map();
+
+        *reinterpret_cast<uint32_t*>(m) = vec_size_;
+        float* v = reinterpret_cast<float*>(m + sizeof(uint32_t));
+        std::stringstream ss;
+        for (uint32_t i = 0; i < vec_size_; ++i) {
+            v[i] = std::rand() % 10;
+            ss << v[i] << " ";
+        }
+        spdlog::info("vector: size {} [ {}]", vec_size_, ss.str());
+
+        buffer.unmap();
+    }
+}
+
+void Compute::dump_buffer() {
+    char* m = buffers_.at(1).map();
+
+    uint32_t vec_size = *reinterpret_cast<uint32_t*>(m);
+    float* v = reinterpret_cast<float*>(m + sizeof(uint32_t));
+    std::stringstream ss;
+    for (uint32_t i = 0; i < vec_size_; ++i) {
+        ss << v[i] << " ";
+    }
+    spdlog::info("vector: size {} [ {}]", vec_size, ss.str());
+
+    buffers_.at(1).unmap();
+}
+
 }  // namespace vkc
 
 int main() {
@@ -497,11 +628,18 @@ int main() {
     compute.init_instance(true);
     compute.get_physical_device();
     compute.init_device();
+
     compute.init_vma_allocator();
+    compute.create_command_buffer();
+
     compute.vec_size_ = 10;
     compute.create_buffers();
     compute.create_descriptors();
     compute.create_pipeline();
+
+    compute.fill_buffer();
+    compute.dispatch();
+    compute.dump_buffer();
 
     return 0;
 }
