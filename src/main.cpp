@@ -49,12 +49,13 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
 }
 
 struct Buffer {
+    VkBuffer handle_;
+
     VmaAllocator allocator_;
     VmaAllocation allocation_;
     VmaAllocationInfo allocation_info_;
     VmaMemoryUsage mem_usage_;
 
-    VkBuffer buffer_;
     uint32_t size_;
     uint32_t family_index_;
     VkBufferCreateFlags buffer_usage_;
@@ -94,7 +95,7 @@ Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
     allocation_create_info.usage = mem_usage;
 
     PANIC_BAD_RESULT(vmaCreateBuffer(allocator_, &create_info,
-                                     &allocation_create_info, &buffer_,
+                                     &allocation_create_info, &handle_,
                                      &allocation_, &allocation_info_));
 }
 Buffer::~Buffer() {}
@@ -126,8 +127,8 @@ void Buffer::unmap() {
 }
 
 struct DescriptorSet {
-    VkDescriptorSet descriptor_set_;
-    VkDescriptorSetLayout descriptor_set_layout_;
+    VkDescriptorSet handle_;
+    VkDescriptorSetLayout set_layout_;
     std::vector<VkDescriptorSetLayoutBinding> bindings_;
 
     VkDevice device_;
@@ -142,13 +143,12 @@ struct DescriptorSet {
                 const VkBuffer& buffer);
 };
 
-DescriptorSet::DescriptorSet(const VkDevice& device,
-                             VkDescriptorSet descriptor_set,
-                             VkDescriptorSetLayout descriptor_set_layout,
+DescriptorSet::DescriptorSet(const VkDevice& device, VkDescriptorSet handle,
+                             VkDescriptorSetLayout set_layout,
                              std::vector<VkDescriptorSetLayoutBinding> bindings)
     : device_(device),
-      descriptor_set_(descriptor_set),
-      descriptor_set_layout_(descriptor_set_layout),
+      handle_(handle),
+      set_layout_(set_layout),
       bindings_(bindings) {}
 
 void DescriptorSet::update(uint32_t binding, uint32_t start_element,
@@ -168,7 +168,7 @@ void DescriptorSet::update(uint32_t binding, uint32_t start_element,
     write_set.dstBinding = binding;
     write_set.dstArrayElement = start_element;
     write_set.dstBinding = binding;
-    write_set.dstSet = descriptor_set_;
+    write_set.dstSet = handle_;
     write_set.pBufferInfo = &buffer_info;
 
     write_set.pImageInfo = nullptr;
@@ -178,7 +178,7 @@ void DescriptorSet::update(uint32_t binding, uint32_t start_element,
 }
 
 struct DescriptorPool {
-    VkDescriptorPool descriptor_pool_;
+    VkDescriptorPool handle_;
     std::vector<VkDescriptorPoolSize> pool_sizes_;
     uint32_t max_sets_;
 
@@ -207,8 +207,8 @@ void DescriptorPool::create() {
     create_info.poolSizeCount = pool_sizes_.size();
     create_info.pPoolSizes = pool_sizes_.data();
 
-    PANIC_BAD_RESULT(vkCreateDescriptorPool(device_, &create_info, nullptr,
-                                            &descriptor_pool_));
+    PANIC_BAD_RESULT(
+        vkCreateDescriptorPool(device_, &create_info, nullptr, &handle_));
 }
 
 DescriptorSet DescriptorPool::allocate_descriptor_set(
@@ -232,7 +232,7 @@ DescriptorSet DescriptorPool::allocate_descriptor_set(
 
     VkDescriptorSetAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc_info.descriptorPool = descriptor_pool_;
+    alloc_info.descriptorPool = handle_;
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &set_layout;
 
@@ -252,13 +252,13 @@ struct Pipeline {
     Pipeline(const VkDevice& device);
 
     void create(const std::vector<uint32_t>& program_src,
-                const DescriptorSet& descriptor_set);
+                const VkDescriptorSetLayout& descriptor_set_layout);
 };
 
 Pipeline::Pipeline(const VkDevice& device) : device_(device) {}
 
 void Pipeline::create(const std::vector<uint32_t>& program_src,
-                      const DescriptorSet& descriptor_set) {
+                      const VkDescriptorSetLayout& descriptor_set_layout) {
     VkShaderModuleCreateInfo shader_info_ = {};
     shader_info_.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     shader_info_.pCode = program_src.data();
@@ -270,7 +270,7 @@ void Pipeline::create(const std::vector<uint32_t>& program_src,
     VkPipelineLayoutCreateInfo layout_info = {};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &descriptor_set.descriptor_set_layout_;
+    layout_info.pSetLayouts = &descriptor_set_layout;
 
     PANIC_BAD_RESULT(vkCreatePipelineLayout(device_, &layout_info, nullptr,
                                             &pipeline_layout_));
@@ -290,53 +290,27 @@ void Pipeline::create(const std::vector<uint32_t>& program_src,
         device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_));
 }
 
-class Compute {
-   public:
-    VkInstance instance_;
-    bool use_validation_;
-
-    VkDebugUtilsMessengerEXT debug_messenger_;
-
-    VkPhysicalDevice physical_device_;
-    VkPhysicalDeviceProperties physical_device_properties_;
-    VkPhysicalDeviceMemoryProperties physical_device_memory_properties_;
-
-    VkDevice device_;
-    VkQueue compute_queue_;
-    uint32_t compute_queue_index_;
-
-    VmaAllocator allocator_;
-
-    std::vector<const char*> instance_extensions_;
-    std::vector<const char*> device_extensions_;
-
-    uint32_t vec_size_;
-    std::vector<Buffer> buffers_;
-
-    DescriptorPool descriptor_pool_;
-    DescriptorSet descriptor_set_;
-
-    Pipeline pipeline_;
-
-    VkCommandPool command_pool_;
-    VkCommandBuffer command_buffer_;
-
-    void init_instance(bool use_validation);
-    void get_physical_device();
-    void init_device();
-    void init_vma_allocator();
-    void create_buffers();
-    void create_descriptors();
-    void create_pipeline();
-    void create_command_buffer();
-
-    void dispatch();
-
-    void fill_buffer();
-    void dump_buffer();
+struct PhysicalDevice {
+    VkPhysicalDevice handle_;
+    VkPhysicalDeviceProperties properties_;
+    VkPhysicalDeviceMemoryProperties memory_properties_;
+    std::vector<VkQueueFamilyProperties> family_properties_;
 };
 
-void Compute::init_instance(bool use_validation) {
+struct Instance {
+    VkInstance handle_;
+    std::vector<const char*> instance_extensions_;
+
+    bool use_validation_;
+    VkDebugUtilsMessengerEXT debug_messenger_;
+
+    std::vector<PhysicalDevice> physical_devices_;
+
+    void init(bool use_validation);
+    void query_physical_devices();
+};
+
+void Instance::init(bool use_validation) {
     use_validation_ = use_validation;
 
     spdlog::set_level(spdlog::level::debug);
@@ -376,22 +350,23 @@ void Compute::init_instance(bool use_validation) {
     create_info.ppEnabledLayerNames = validation_layers.data();
     create_info.pApplicationInfo = &app_info;
 
-    PANIC_BAD_RESULT(vkCreateInstance(&create_info, nullptr, &instance_));
+    PANIC_BAD_RESULT(vkCreateInstance(&create_info, nullptr, &handle_));
 
-    volkLoadInstance(instance_);
+    volkLoadInstance(handle_);
 
-    if (use_validation_) debug_messenger_ = create_debug_messenger(instance_);
+    if (use_validation_) debug_messenger_ = create_debug_messenger(handle_);
 }
 
-void Compute::get_physical_device() {
+void Instance::query_physical_devices() {
     std::vector<VkPhysicalDevice> physical_devices;
     uint32_t physical_device_count = 0;
-    vkEnumeratePhysicalDevices(instance_, &physical_device_count, nullptr);
+    vkEnumeratePhysicalDevices(handle_, &physical_device_count, nullptr);
     physical_devices.resize(physical_device_count);
-    vkEnumeratePhysicalDevices(instance_, &physical_device_count,
+    vkEnumeratePhysicalDevices(handle_, &physical_device_count,
                                physical_devices.data());
 
-    bool found_device = false;
+    physical_devices_.reserve(physical_devices.size());
+
     for (auto& phys_dev : physical_devices) {
         std::vector<VkQueueFamilyProperties> family_properties;
         uint32_t family_count = 0;
@@ -401,55 +376,25 @@ void Compute::get_physical_device() {
         vkGetPhysicalDeviceQueueFamilyProperties(phys_dev, &family_count,
                                                  family_properties.data());
 
-        for (uint32_t i = 0; i < family_properties.size(); ++i) {
-            if (family_properties.at(i).queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                found_device = true;
-                physical_device_ = phys_dev;
-                compute_queue_index_ = i;
-            }
-        }
-    }
+        VkPhysicalDeviceProperties physical_device_properties;
+        vkGetPhysicalDeviceProperties(phys_dev, &physical_device_properties);
+        VkPhysicalDeviceMemoryProperties physical_device_memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(phys_dev,
+                                            &physical_device_memory_properties);
 
-    if (!found_device) {
-        spdlog::error("Failed to find a compute device, abort");
-        std::exit(EXIT_FAILURE);
+        physical_devices_.push_back({phys_dev, physical_device_properties,
+                                     physical_device_memory_properties,
+                                     family_properties});
     }
-
-    vkGetPhysicalDeviceProperties(physical_device_,
-                                  &physical_device_properties_);
-    vkGetPhysicalDeviceMemoryProperties(physical_device_,
-                                        &physical_device_memory_properties_);
 }
 
-void Compute::init_device() {
-    float queue_priority = 1.0f;
-    VkDeviceQueueCreateInfo queue_create_info = {};
-    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_create_info.pQueuePriorities = &queue_priority;
-    queue_create_info.queueCount = 1;
-    queue_create_info.queueFamilyIndex = compute_queue_index_;
-
-    VkDeviceCreateInfo create_info = {};
-    create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    create_info.enabledExtensionCount = device_extensions_.size();
-    create_info.ppEnabledExtensionNames = device_extensions_.data();
-    create_info.queueCreateInfoCount = 1;
-    create_info.pQueueCreateInfos = &queue_create_info;
-
-    PANIC_BAD_RESULT(
-        vkCreateDevice(physical_device_, &create_info, nullptr, &device_));
-
-    volkLoadDevice(device_);
-
-    vkGetDeviceQueue(device_, compute_queue_index_, 0, &compute_queue_);
-}
-
-void Compute::init_vma_allocator() {
+VmaAllocator create_vma_allocator(VkDevice device,
+                                  VkPhysicalDevice physical_device) {
     /*
-        Vulkan Memory Allocator
-        More info at:
-       https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
-     */
+            Vulkan Memory Allocator
+            More info at:
+           https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+         */
     spdlog::info("Initializing VMA Allocator");
 
     VmaVulkanFunctions vma_functions = {vkGetPhysicalDeviceProperties,
@@ -471,11 +416,100 @@ void Compute::init_vma_allocator() {
                                         vkCmdCopyBuffer};
 
     VmaAllocatorCreateInfo allocator_create_info = {};
-    allocator_create_info.physicalDevice = physical_device_;
-    allocator_create_info.device = device_;
+    allocator_create_info.physicalDevice = physical_device;
+    allocator_create_info.device = device;
     allocator_create_info.pVulkanFunctions = &vma_functions;
 
-    PANIC_BAD_RESULT(vmaCreateAllocator(&allocator_create_info, &allocator_));
+    VmaAllocator allocator;
+    PANIC_BAD_RESULT(vmaCreateAllocator(&allocator_create_info, &allocator));
+    return allocator;
+}
+
+class Compute {
+   public:
+    Instance instance_;
+    PhysicalDevice physical_device_;
+
+    VkDevice device_;
+    std::vector<const char*> device_extensions_;
+
+    VkQueue compute_queue_;
+    uint32_t compute_queue_index_;
+
+    VmaAllocator allocator_;
+    std::vector<Buffer> buffers_;
+    uint32_t vec_size_;
+
+    DescriptorPool descriptor_pool_;
+    DescriptorSet descriptor_set_;
+
+    Pipeline pipeline_;
+
+    VkCommandPool command_pool_;
+    VkCommandBuffer command_buffer_;
+
+    void init(bool use_validation);
+    void get_physical_device();
+    void init_device();
+    void create_buffers();
+    void create_descriptors();
+    void create_pipeline();
+    void create_command_buffer();
+
+    void dispatch();
+
+    void fill_buffer();
+    void dump_buffer();
+};
+
+void Compute::init(bool use_validation) {
+    instance_.init(use_validation);
+    instance_.query_physical_devices();
+
+    get_physical_device();
+}
+
+void Compute::get_physical_device() {
+    bool found_device = false;
+    for (auto& phys_dev : instance_.physical_devices_) {
+        for (uint32_t i = 0; i < phys_dev.family_properties_.size(); ++i) {
+            auto& family_property = phys_dev.family_properties_.at(i);
+            if (family_property.queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                found_device = true;
+                physical_device_ = phys_dev;
+                compute_queue_index_ = i;
+            }
+        }
+    }
+
+    if (!found_device) {
+        spdlog::error("Failed to find a compute device, abort");
+        std::exit(EXIT_FAILURE);
+    }
+}
+
+void Compute::init_device() {
+    float queue_priority = 1.0f;
+    VkDeviceQueueCreateInfo queue_create_info = {};
+    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_create_info.pQueuePriorities = &queue_priority;
+    queue_create_info.queueCount = 1;
+    queue_create_info.queueFamilyIndex = compute_queue_index_;
+
+    VkDeviceCreateInfo create_info = {};
+    create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    create_info.enabledExtensionCount = device_extensions_.size();
+    create_info.ppEnabledExtensionNames = device_extensions_.data();
+    create_info.queueCreateInfoCount = 1;
+    create_info.pQueueCreateInfos = &queue_create_info;
+
+    PANIC_BAD_RESULT(vkCreateDevice(physical_device_.handle_, &create_info,
+                                    nullptr, &device_));
+
+    volkLoadDevice(device_);
+    allocator_ = create_vma_allocator(device_, physical_device_.handle_);
+
+    vkGetDeviceQueue(device_, compute_queue_index_, 0, &compute_queue_);
 }
 
 void Compute::create_buffers() {
@@ -509,8 +543,8 @@ void Compute::create_descriptors() {
     descriptor_set_ = descriptor_pool_.allocate_descriptor_set(bindings);
 
     spdlog::info("Updating descriptor set");
-    descriptor_set_.update(0, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(0).buffer_);
-    descriptor_set_.update(1, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(1).buffer_);
+    descriptor_set_.update(0, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(0).handle_);
+    descriptor_set_.update(1, 0, 1, 0, VK_WHOLE_SIZE, buffers_.at(1).handle_);
 }
 
 void Compute::create_pipeline() {
@@ -533,7 +567,7 @@ void Compute::create_pipeline() {
     spdlog::info("Binary Size: {}", shader_binary.size());
 
     spdlog::info("Creating compute pipeline");
-    pipeline_.create(shader_binary, descriptor_set_);
+    pipeline_.create(shader_binary, descriptor_set_.set_layout_);
 }
 
 void Compute::create_command_buffer() {
@@ -569,7 +603,7 @@ void Compute::dispatch() {
 
     vkCmdBindDescriptorSets(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE,
                             pipeline_.pipeline_layout_, 0, 1,
-                            &descriptor_set_.descriptor_set_, 0, nullptr);
+                            &descriptor_set_.handle_, 0, nullptr);
 
     vkCmdDispatch(command_buffer_, 1, 1, 1);
 
@@ -625,11 +659,10 @@ void Compute::dump_buffer() {
 
 int main() {
     vkc::Compute compute;
-    compute.init_instance(true);
+    compute.init(true);
     compute.get_physical_device();
     compute.init_device();
 
-    compute.init_vma_allocator();
     compute.create_command_buffer();
 
     compute.vec_size_ = 10;
