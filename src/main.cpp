@@ -58,7 +58,24 @@ class MoveOnly {
     MoveOnly& operator=(MoveOnly) = delete;
 };
 
-struct Buffer {
+class Compute;
+class Buffer : MoveOnly {
+    friend Compute;
+
+   public:
+    char* map();
+    void unmap();
+
+    Buffer() = default;
+    Buffer(const VmaAllocator& allocator, uint32_t size,
+           VkBufferCreateFlags buffer_usage, VmaMemoryUsage mem_usage,
+           uint32_t family_index);
+    ~Buffer();
+
+    Buffer(Buffer&&) = default;
+    Buffer& operator=(Buffer&&) = default;
+
+   private:
     VkBuffer handle_;
 
     VmaAllocator allocator_;
@@ -73,14 +90,7 @@ struct Buffer {
     char* map_ptr_;
     bool is_mapped_;
 
-    Buffer() = default;
-    Buffer(const VmaAllocator& allocator, uint32_t size,
-           VkBufferCreateFlags buffer_usage, VmaMemoryUsage mem_usage,
-           uint32_t family_index);
-    ~Buffer();
-
-    char* map();
-    void unmap();
+    void destroy();
 };
 
 Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
@@ -318,6 +328,7 @@ struct Instance {
 
     void init(bool use_validation);
     void query_physical_devices();
+    void destroy();
 };
 
 void Instance::init(bool use_validation) {
@@ -396,6 +407,11 @@ void Instance::query_physical_devices() {
                                      physical_device_memory_properties,
                                      family_properties});
     }
+}
+
+void Instance::destroy() {
+    vkDestroyDebugUtilsMessengerEXT(handle_, debug_messenger_, nullptr);
+    vkDestroyInstance(handle_, nullptr);
 }
 
 VmaAllocator create_vma_allocator(VkDevice device,
@@ -477,26 +493,9 @@ VkCommandBuffer CommandPool::allocate_command_buffer(
 
 class Compute {
    public:
-    Instance instance_;
-    PhysicalDevice physical_device_;
+    ~Compute();
 
-    VkDevice device_;
-    std::vector<const char*> device_extensions_;
-
-    VkQueue compute_queue_;
-    uint32_t compute_queue_index_;
-
-    VmaAllocator allocator_;
-    std::vector<Buffer> buffers_;
     uint32_t vec_size_;
-
-    DescriptorPool descriptor_pool_;
-    DescriptorSet descriptor_set_;
-
-    Pipeline pipeline_;
-
-    CommandPool command_pool_;
-    VkCommandBuffer command_buffer_;
 
     void init(bool use_validation);
     void get_physical_device();
@@ -510,7 +509,30 @@ class Compute {
 
     void fill_buffer();
     void dump_buffer();
+
+   private:
+    Instance instance_;
+    PhysicalDevice physical_device_;
+
+    VkDevice device_;
+    std::vector<const char*> device_extensions_;
+
+    VkQueue compute_queue_;
+    uint32_t compute_queue_index_;
+
+    VmaAllocator allocator_;
+    std::vector<Buffer> buffers_;
+
+    DescriptorPool descriptor_pool_;
+    DescriptorSet descriptor_set_;
+
+    Pipeline pipeline_;
+
+    CommandPool command_pool_;
+    VkCommandBuffer command_buffer_;
 };
+
+Compute::~Compute() { instance_.destroy(); }
 
 void Compute::init(bool use_validation) {
     instance_.init(use_validation);
