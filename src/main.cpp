@@ -1,6 +1,6 @@
 #include "vkrpch.h"
 
-#define PANIC_BAD_RESULT(result)                              \
+#define VK_PANIC(result)                                      \
     if (result != VK_SUCCESS) {                               \
         spdlog::error("PANIC AT: {}:{}", __LINE__, __FILE__); \
         std::exit(EXIT_FAILURE);                              \
@@ -42,8 +42,8 @@ VkDebugUtilsMessengerEXT create_debug_messenger(const VkInstance instance) {
             instance, "vkDestroyDebugUtilsMessengerEXT");
 
     VkDebugUtilsMessengerEXT debug_messenger;
-    PANIC_BAD_RESULT(vkCreateDebugUtilsMessengerEXT(
-        instance, &messenger_create_info, nullptr, &debug_messenger));
+    VK_PANIC(vkCreateDebugUtilsMessengerEXT(instance, &messenger_create_info,
+                                            nullptr, &debug_messenger));
 
     return debug_messenger;
 }
@@ -104,9 +104,8 @@ Buffer::Buffer(const VmaAllocator& allocator, uint32_t size,
     VmaAllocationCreateInfo allocation_create_info = {};
     allocation_create_info.usage = mem_usage;
 
-    PANIC_BAD_RESULT(vmaCreateBuffer(allocator_, &create_info,
-                                     &allocation_create_info, &handle_,
-                                     &allocation_, &allocation_info_));
+    VK_PANIC(vmaCreateBuffer(allocator_, &create_info, &allocation_create_info,
+                             &handle_, &allocation_, &allocation_info_));
 }
 Buffer::~Buffer() {}
 
@@ -118,8 +117,8 @@ char* Buffer::map() {
         std::exit(EXIT_FAILURE);
     }
 
-    PANIC_BAD_RESULT(vmaMapMemory(allocator_, allocation_,
-                                  reinterpret_cast<void**>(&map_ptr_)));
+    VK_PANIC(vmaMapMemory(allocator_, allocation_,
+                          reinterpret_cast<void**>(&map_ptr_)));
 
     is_mapped_ = true;
     return map_ptr_;
@@ -217,8 +216,7 @@ void DescriptorPool::create() {
     create_info.poolSizeCount = pool_sizes_.size();
     create_info.pPoolSizes = pool_sizes_.data();
 
-    PANIC_BAD_RESULT(
-        vkCreateDescriptorPool(device_, &create_info, nullptr, &handle_));
+    VK_PANIC(vkCreateDescriptorPool(device_, &create_info, nullptr, &handle_));
 }
 
 DescriptorSet DescriptorPool::allocate_descriptor_set(
@@ -237,8 +235,8 @@ DescriptorSet DescriptorPool::allocate_descriptor_set(
     set_layout_info.pBindings = bindings.data();
 
     VkDescriptorSetLayout set_layout;
-    PANIC_BAD_RESULT(vkCreateDescriptorSetLayout(device_, &set_layout_info,
-                                                 nullptr, &set_layout));
+    VK_PANIC(vkCreateDescriptorSetLayout(device_, &set_layout_info, nullptr,
+                                         &set_layout));
 
     VkDescriptorSetAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -247,7 +245,7 @@ DescriptorSet DescriptorPool::allocate_descriptor_set(
     alloc_info.pSetLayouts = &set_layout;
 
     VkDescriptorSet set;
-    PANIC_BAD_RESULT(vkAllocateDescriptorSets(device_, &alloc_info, &set));
+    VK_PANIC(vkAllocateDescriptorSets(device_, &alloc_info, &set));
     return DescriptorSet(device_, set, set_layout, bindings);
 }
 
@@ -274,16 +272,15 @@ void Pipeline::create(const std::vector<uint32_t>& program_src,
     shader_info_.pCode = program_src.data();
     shader_info_.codeSize = program_src.size();
 
-    PANIC_BAD_RESULT(
-        vkCreateShaderModule(device_, &shader_info_, nullptr, &shader_));
+    VK_PANIC(vkCreateShaderModule(device_, &shader_info_, nullptr, &shader_));
 
     VkPipelineLayoutCreateInfo layout_info = {};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &descriptor_set_layout;
 
-    PANIC_BAD_RESULT(vkCreatePipelineLayout(device_, &layout_info, nullptr,
-                                            &pipeline_layout_));
+    VK_PANIC(vkCreatePipelineLayout(device_, &layout_info, nullptr,
+                                    &pipeline_layout_));
 
     VkPipelineShaderStageCreateInfo stage_info = {};
     stage_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -296,8 +293,8 @@ void Pipeline::create(const std::vector<uint32_t>& program_src,
     pipeline_info.layout = pipeline_layout_;
     pipeline_info.stage = stage_info;
 
-    PANIC_BAD_RESULT(vkCreateComputePipelines(
-        device_, VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &pipeline_));
+    VK_PANIC(vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
+                                      &pipeline_info, nullptr, &pipeline_));
 }
 
 struct PhysicalDevice {
@@ -326,10 +323,9 @@ void Instance::init(bool use_validation) {
     spdlog::set_level(spdlog::level::debug);
     spdlog::set_pattern("[%T] [%^%l%$] %v");
 
-    /*
-        Using volk to minimize API calls overhead
-        More info at: https://gpuopen.com/reducing-vulkan-api-call-overhead/
-    */
+    // Using volk to minimize API calls overhead
+    // More info at: https://gpuopen.com/reducing-vulkan-api-call-overhead/
+
     spdlog::info("Initializing volk");
     if (volkInitialize() != VK_SUCCESS) {
         spdlog::error("Failed to initialize volk, abort");
@@ -360,7 +356,7 @@ void Instance::init(bool use_validation) {
     create_info.ppEnabledLayerNames = validation_layers.data();
     create_info.pApplicationInfo = &app_info;
 
-    PANIC_BAD_RESULT(vkCreateInstance(&create_info, nullptr, &handle_));
+    VK_PANIC(vkCreateInstance(&create_info, nullptr, &handle_));
 
     volkLoadInstance(handle_);
 
@@ -400,11 +396,10 @@ void Instance::query_physical_devices() {
 
 VmaAllocator create_vma_allocator(VkDevice device,
                                   VkPhysicalDevice physical_device) {
-    /*
-            Vulkan Memory Allocator
-            More info at:
-           https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
-         */
+    // Vulkan Memory Allocator
+    // More info at:
+    // https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+
     spdlog::info("Initializing VMA Allocator");
 
     VmaVulkanFunctions vma_functions = {vkGetPhysicalDeviceProperties,
@@ -431,7 +426,7 @@ VmaAllocator create_vma_allocator(VkDevice device,
     allocator_create_info.pVulkanFunctions = &vma_functions;
 
     VmaAllocator allocator;
-    PANIC_BAD_RESULT(vmaCreateAllocator(&allocator_create_info, &allocator));
+    VK_PANIC(vmaCreateAllocator(&allocator_create_info, &allocator));
     return allocator;
 }
 
@@ -455,8 +450,7 @@ CommandPool::CommandPool(VkDevice device, uint32_t family_index)
     pool_info.queueFamilyIndex = family_index_;
 
     spdlog::info("Creating command pool");
-    PANIC_BAD_RESULT(
-        vkCreateCommandPool(device_, &pool_info, nullptr, &handle_));
+    VK_PANIC(vkCreateCommandPool(device_, &pool_info, nullptr, &handle_));
 }
 
 VkCommandBuffer CommandPool::allocate_command_buffer(
@@ -468,8 +462,7 @@ VkCommandBuffer CommandPool::allocate_command_buffer(
     alloc_info.commandPool = handle_;
 
     VkCommandBuffer command_buffer;
-    PANIC_BAD_RESULT(
-        vkAllocateCommandBuffers(device_, &alloc_info, &command_buffer));
+    VK_PANIC(vkAllocateCommandBuffers(device_, &alloc_info, &command_buffer));
 
     command_buffers_.push_back(command_buffer);
     return command_buffer;
@@ -553,8 +546,8 @@ void Compute::init_device() {
     create_info.queueCreateInfoCount = 1;
     create_info.pQueueCreateInfos = &queue_create_info;
 
-    PANIC_BAD_RESULT(vkCreateDevice(physical_device_.handle_, &create_info,
-                                    nullptr, &device_));
+    VK_PANIC(vkCreateDevice(physical_device_.handle_, &create_info, nullptr,
+                            &device_));
 
     volkLoadDevice(device_);
     allocator_ = create_vma_allocator(device_, physical_device_.handle_);
@@ -632,7 +625,7 @@ void Compute::dispatch() {
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
     spdlog::info("Recording command buffer");
-    PANIC_BAD_RESULT(vkBeginCommandBuffer(command_buffer_, &begin_info));
+    VK_PANIC(vkBeginCommandBuffer(command_buffer_, &begin_info));
 
     vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_COMPUTE,
                       pipeline_.pipeline_);
@@ -643,7 +636,7 @@ void Compute::dispatch() {
 
     vkCmdDispatch(command_buffer_, 1, 1, 1);
 
-    PANIC_BAD_RESULT(vkEndCommandBuffer(command_buffer_));
+    VK_PANIC(vkEndCommandBuffer(command_buffer_));
 
     spdlog::info("Submitting");
     VkSubmitInfo submit_info = {};
@@ -651,8 +644,7 @@ void Compute::dispatch() {
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &command_buffer_;
 
-    PANIC_BAD_RESULT(
-        vkQueueSubmit(compute_queue_, 1, &submit_info, VK_NULL_HANDLE));
+    VK_PANIC(vkQueueSubmit(compute_queue_, 1, &submit_info, VK_NULL_HANDLE));
 
     spdlog::info("Wainting on queue");
     vkQueueWaitIdle(compute_queue_);
