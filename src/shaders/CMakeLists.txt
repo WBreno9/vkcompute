@@ -1,4 +1,4 @@
-set(GLSL_VALIDATOR $ENV{VULKAN_SDK}/bin/glslangValidator)
+set(GLSL_VALIDATOR glslangValidator)
 
 set( SHADERS
     ${CMAKE_SOURCE_DIR}/src/shaders/sum.comp
